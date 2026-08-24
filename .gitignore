@@ -1,0 +1,13 @@
+# Local-only agent docs (kept private)
+AGENTS.md
+CLAUDE.md
+
+# Eval run logs (cases + runner are public; transcripts stay local)
+evals/runs/
+
+# Local settings
+.claude/settings.local.json
+.DS_Store
+
+# Python bytecode
+__pycache__/

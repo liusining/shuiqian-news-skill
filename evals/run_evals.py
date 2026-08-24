@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""Minimal deterministic eval runner for the shuiqian-news-list skill.
+
+Each case runs `codex exec` in a fresh workspace whose .agents/skills/
+contains only a copy of the skill under test (plus whatever global skills
+the harness exposes — realistic for actual users). Assertions are plain
+program checks, no LLM judging:
+
+  - trigger yes: a concrete /daily/<date>.json URL was requested
+  - trigger no:  no concrete /daily/<date>.json request at all
+  - render:      every item title and source_url of the day's JSON
+                 appears in the final answer; all links in the answer
+                 are a subset of links known from the JSON/API
+  - 404 branch:  answer contains an expected phrase and fabricates
+                 nothing (link-subset check again)
+
+Date-sensitive cases probe the live API first, so the same case stays
+valid as backfill progresses ("去年今天" flips 404 -> 200 on its own).
+
+Usage:
+  run_evals.py [--only id1,id2] [--keep-workspaces]
+Results land in evals/runs/<timestamp>/ (gitignored).
+"""
+
+import argparse
+import datetime as dt
+import json
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+ROOT = Path(__file__).resolve().parent.parent
+SKILL_DIR = ROOT / "skills" / "shuiqian-news-list"
+RUNS_DIR = Path(__file__).resolve().parent / "runs"
+TZ = ZoneInfo("Asia/Shanghai")
+API = "https://shuiqian-news.sining.ai"
+UA = {"User-Agent": "shuiqian-news-eval/1 (+https://shuiqian-news.sining.ai)"}
+DAILY_URL_RE = re.compile(r"/daily/(\d{4}-\d{2}-\d{2})\.json")
+# Remote-only variant: after a clone the workspace contains local
+# data/daily/*.json paths, which must not count as network fetches.
+REMOTE_DAILY_RE = re.compile(r"https?://[^\s\"']*/daily/(\d{4}-\d{2}-\d{2})\.json")
+LINK_RE = re.compile(r"https?://[^\s)\]>\"']+")
+CODEX_TIMEOUT = 600
+
+
+def api_get(path):
+    req = urllib.request.Request(f"{API}{path}", headers=UA)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        return e.code, None
+
+
+def resolve_date(spec):
+    today = dt.datetime.now(TZ).date()
+    if spec == "today":
+        return today.isoformat()
+    if spec == "yesterday":
+        return (today - dt.timedelta(days=1)).isoformat()
+    if spec == "day-2":
+        return (today - dt.timedelta(days=2)).isoformat()
+    if spec == "lastyear":
+        try:
+            return today.replace(year=today.year - 1).isoformat()
+        except ValueError:  # Feb 29
+            return today.replace(year=today.year - 1, day=28).isoformat()
+    return spec  # literal YYYY-MM-DD
+
+
+def run_codex(prompt, ws):
+    (ws / ".agents" / "skills").mkdir(parents=True)
+    shutil.copytree(SKILL_DIR, ws / ".agents" / "skills" / SKILL_DIR.name)
+    last = ws / "last.txt"
+    r = subprocess.run(
+        ["codex", "exec", "-C", str(ws), "--skip-git-repo-check",
+         "-o", str(last), prompt],
+        capture_output=True, text=True, timeout=CODEX_TIMEOUT)
+    events = r.stdout + r.stderr
+    answer = last.read_text(encoding="utf-8") if last.exists() else ""
+    return events, answer, r.returncode
+
+
+def norm(text):
+    """Comparison form ignoring whitespace and punctuation: agents may
+    render the double-space separators inside some source titles as a
+    comma etc. — harmless formatting freedom, not a content change."""
+    return re.sub(r"[^\w]+", "", text)
+
+
+def link_universe(docs):
+    urls = {API, f"{API}/index.json", "https://raw.githubusercontent.com",
+            "https://github.com/liusining/shuiqian-news-list",
+            "https://github.com/liusining/shuiqian-news-skill"}
+    for day_doc in docs:
+        if day_doc:
+            if day_doc.get("article_url"):
+                urls.add(day_doc["article_url"])
+            for it in day_doc.get("items", []):
+                if it.get("source_url"):
+                    urls.add(it["source_url"])
+                # bodies of weibo-era days keep inline markdown links —
+                # rendering them is faithful output, not fabrication
+                for u in LINK_RE.findall(it.get("body") or ""):
+                    urls.add(u.rstrip(".,;:。，；：)"))
+    return urls
+
+
+def check_links_subset(answer, docs, failures):
+    allowed = link_universe(docs)
+    for url in LINK_RE.findall(answer):
+        url = url.rstrip(".,;:。，；：")
+        if any(url.startswith(a) for a in allowed):
+            continue
+        if DAILY_URL_RE.search(url):  # api daily url itself
+            continue
+        failures.append(f"fabricated/unknown link: {url[:80]}")
+
+
+def check_render(answer, day_doc, failures):
+    hay = norm(answer)
+    for it in day_doc.get("items", []):
+        if norm(it["title"]) not in hay:
+            failures.append(f"missing item title: {it['no']}. {it['title'][:30]}")
+        if it.get("source_url") and it["source_url"] not in answer:
+            failures.append(f"missing source_url of item {it['no']}")
+
+
+def run_case(ev, keep_ws):
+    checks = ev.get("checks", {})
+    ws = Path(tempfile.mkdtemp(prefix=f"sqeval-{ev['id']}-"))
+    failures = []
+    try:
+        events, answer, rc = run_codex(ev["prompt"], ws)
+        if rc != 0:
+            failures.append(f"codex exec rc={rc}")
+        fetched = set(DAILY_URL_RE.findall(events))
+
+        if checks.get("trigger") is False:
+            if fetched:
+                failures.append(f"should not trigger, but fetched {sorted(fetched)}")
+            return failures, events, answer
+
+        if "date" in checks:
+            date = resolve_date(checks["date"])
+            status, doc = api_get(f"/daily/{date}.json")
+            if status == 200:
+                if date not in fetched:
+                    failures.append(f"expected fetch of /daily/{date}.json, "
+                                    f"saw {sorted(fetched) or 'none'}")
+                check_render(answer, doc, failures)
+                check_links_subset(answer, [doc], failures)
+            else:  # 404 branch of a dynamic date
+                _, idx = api_get("/index.json")
+                latest = (idx or {}).get("latest", "")
+                is_today = date == dt.datetime.now(TZ).date().isoformat()
+                if is_today:
+                    if latest and latest not in answer:
+                        failures.append(
+                            f"today-unpublished: latest {latest} not mentioned")
+                elif not any(k in answer for k in ("找不到", "没有", "缺", "无数据")):
+                    failures.append("404 branch: no not-found wording in answer")
+                check_links_subset(answer, [], failures)
+            return failures, events, answer
+
+        if "branch" in checks:
+            if not any(p in answer for p in checks["phrases"]):
+                failures.append(
+                    f"{checks['branch']}: none of {checks['phrases']} in answer")
+            check_links_subset(answer, [], failures)
+            return failures, events, answer
+
+        if checks.get("bulk"):
+            remote = sorted(set(REMOTE_DAILY_RE.findall(events)))
+            if remote:
+                failures.append(f"bulk case made per-day remote fetches: "
+                                f"{remote[:3]}{'...' if len(remote) > 3 else ''}")
+            if "git clone" not in events and "Cloning into" not in events:
+                failures.append("no clone evidence in events")
+            # Bulk deliverables legitimately land in a written file rather
+            # than the chat answer (the skill tells agents to aggregate
+            # locally) — count workspace .md/.txt files as output too.
+            corpus = answer
+            for p in ws.rglob("*"):
+                if (p.is_file() and p.suffix.lower() in (".md", ".txt")
+                        and ".agents" not in p.parts and p.name != "last.txt"
+                        and p.stat().st_size < 5_000_000):
+                    try:
+                        corpus += "\n" + p.read_text(encoding="utf-8")
+                    except (UnicodeDecodeError, OSError):
+                        pass
+            hay = norm(corpus)
+            docs = []
+            for d in checks["sample_dates"]:
+                status, doc = api_get(f"/daily/{d}.json")
+                if status != 200 or not doc:
+                    failures.append(f"grader could not fetch sample {d}")
+                    continue
+                docs.append(doc)
+                for it in doc.get("items", []):
+                    if norm(it["title"]) not in hay:
+                        failures.append(f"missing title {d} item {it['no']}: "
+                                        f"{it['title'][:24]}")
+                    if (not checks.get("titles_only") and it.get("source_url")
+                            and it["source_url"] not in corpus):
+                        failures.append(f"missing source_url {d} item {it['no']}")
+            check_links_subset(answer, docs, failures)
+            return failures, events, answer
+
+        if checks.get("noclone"):
+            if "Cloning into" in events:
+                failures.append("small request must not clone the repo")
+            remote = set(REMOTE_DAILY_RE.findall(events))
+            docs = []
+            for d in checks["dates"]:
+                if d not in remote:
+                    failures.append(f"expected per-day remote fetch of {d}")
+                status, doc = api_get(f"/daily/{d}.json")
+                if status == 200 and doc:
+                    docs.append(doc)
+                    check_render(answer, doc, failures)
+            check_links_subset(answer, docs, failures)
+            return failures, events, answer
+
+        failures.append("case has no recognized checks")
+        return failures, events, answer
+    finally:
+        if not keep_ws:
+            shutil.rmtree(ws, ignore_errors=True)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--only")
+    ap.add_argument("--keep-workspaces", action="store_true")
+    args = ap.parse_args()
+
+    spec = json.loads((Path(__file__).resolve().parent / "evals.json")
+                      .read_text(encoding="utf-8"))
+    evals = spec["evals"]
+    if args.only:
+        wanted = set(args.only.split(","))
+        evals = [e for e in evals if e["id"] in wanted]
+
+    stamp = dt.datetime.now(TZ).strftime("%Y%m%d-%H%M%S")
+    out_dir = RUNS_DIR / stamp
+    out_dir.mkdir(parents=True)
+
+    results = []
+    for ev in evals:
+        print(f"== {ev['id']}: {ev['prompt']}")
+        failures, events, answer = run_case(ev, args.keep_workspaces)
+        (out_dir / f"{ev['id']}.events.log").write_text(events, encoding="utf-8")
+        (out_dir / f"{ev['id']}.answer.md").write_text(answer, encoding="utf-8")
+        ok = not failures
+        results.append({"id": ev["id"], "pass": ok, "failures": failures})
+        print("   PASS" if ok else "   FAIL: " + "; ".join(failures))
+
+    passed = sum(r["pass"] for r in results)
+    summary = {"timestamp": stamp, "passed": passed, "total": len(results),
+               "results": results}
+    (out_dir / "results.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"\n{passed}/{len(results)} passed — details in {out_dir}")
+    return 0 if passed == len(results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

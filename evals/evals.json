@@ -1,0 +1,102 @@
+{
+  "skill_name": "shuiqian-news-list",
+  "notes": "16 cases: 5 positive triggers, 5 negative (must stay silent), 2 stable boundaries, 1 dynamic (last year today), 2 bulk (must git clone, zero per-day remote fetches), 1 no-clone boundary (3 days must stay on per-day API). Deterministic assertions only; run with run_evals.py (codex exec harness). Date-sensitive expectations are probed against the live API at run time.",
+  "evals": [
+    {
+      "id": "p-today",
+      "prompt": "今天的睡前消息",
+      "expected_output": "今日列表（若已发布）或「今天还没发布，最新一期是 {latest}」",
+      "checks": {"trigger": true, "date": "today", "dynamic": true}
+    },
+    {
+      "id": "p-yesterday",
+      "prompt": "昨天的睡前新闻列表",
+      "expected_output": "昨日完整新闻列表（标题/正文/原文链接）",
+      "checks": {"trigger": true, "date": "yesterday", "dynamic": true}
+    },
+    {
+      "id": "p-absolute",
+      "prompt": "2023年3月15日的睡前消息有哪些？",
+      "expected_output": "2023-03-15 的完整新闻列表",
+      "checks": {"trigger": true, "date": "2023-03-15", "dynamic": false}
+    },
+    {
+      "id": "p-relative",
+      "prompt": "前天的睡前消息",
+      "expected_output": "前天的完整新闻列表",
+      "checks": {"trigger": true, "date": "day-2", "dynamic": true}
+    },
+    {
+      "id": "p-alias",
+      "prompt": "给我看看马督工今天的新闻列表",
+      "expected_output": "同 p-today（昵称别名触发）",
+      "checks": {"trigger": true, "date": "today", "dynamic": true}
+    },
+    {
+      "id": "n-story",
+      "prompt": "给我讲个睡前故事吧",
+      "expected_output": "讲故事，不请求新闻 API",
+      "checks": {"trigger": false}
+    },
+    {
+      "id": "n-video",
+      "prompt": "马督工最新的B站视频是哪一期？",
+      "expected_output": "不请求新闻 API（视频不在数据范围内）",
+      "checks": {"trigger": false}
+    },
+    {
+      "id": "n-othernews",
+      "prompt": "今天有什么新闻？",
+      "expected_output": "泛新闻请求，不应拉取睡前消息数据",
+      "checks": {"trigger": false}
+    },
+    {
+      "id": "n-audio",
+      "prompt": "睡前听点什么白噪音助眠？",
+      "expected_output": "不请求新闻 API",
+      "checks": {"trigger": false}
+    },
+    {
+      "id": "n-opinion",
+      "prompt": "你怎么评价睡前消息节目的观点？",
+      "expected_output": "评论观点，不需要拉取某天列表（已知边界用例：部分 harness 会拉取一次当日列表作为评价依据，危害可忽略，作趋势观察保留）",
+      "checks": {"trigger": false}
+    },
+    {
+      "id": "b-future",
+      "prompt": "2030年1月1日的睡前消息",
+      "expected_output": "指出日期在未来，无法查询；零编造",
+      "checks": {"branch": "future", "phrases": ["未来", "还没", "尚未", "无法"]}
+    },
+    {
+      "id": "b-outofrange",
+      "prompt": "2018年6月1日的睡前消息",
+      "expected_output": "说明早于数据起点，超出范围；零编造",
+      "checks": {"branch": "outofrange", "phrases": ["超出", "范围", "更早", "起点", "还没有", "尚未"]}
+    },
+    {
+      "id": "l-lastyear",
+      "prompt": "去年今天的睡前消息",
+      "expected_output": "有数据则完整列表；无数据则「找不到」且零编造（预期随回填进度变化，runner 先探测 API）",
+      "checks": {"trigger": true, "date": "lastyear", "dynamic": true}
+    },
+    {
+      "id": "p-bulk-range",
+      "prompt": "把2023年3月1日到3月10日的睡前消息全部整理给我",
+      "expected_output": "10 天完整列表；通过 git clone 获取，零次逐日远程请求",
+      "checks": {"bulk": true, "sample_dates": ["2023-03-01", "2023-03-05", "2023-03-10"]}
+    },
+    {
+      "id": "p-bulk-all",
+      "prompt": "给我2023年全年的睡前消息标题清单",
+      "expected_output": "全年标题清单；通过 git clone 获取，零次逐日远程请求",
+      "checks": {"bulk": true, "titles_only": true, "sample_dates": ["2023-01-04", "2023-06-15", "2023-10-15"]}
+    },
+    {
+      "id": "n-noclone-3days",
+      "prompt": "2023年3月13日到3月15日的睡前消息",
+      "expected_output": "3 天完整列表；逐日请求 API，不得 clone",
+      "checks": {"noclone": true, "dates": ["2023-03-13", "2023-03-14", "2023-03-15"]}
+    }
+  ]
+}

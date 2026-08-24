@@ -1,0 +1,30 @@
+MIT License
+
+Copyright (c) 2026 liusining
+
+本许可证覆盖本仓库的全部内容（skill 文本、eval 脚本与配置）。
+《睡前消息》新闻列表数据存放于独立仓库 shuiqian-news-list，其内容
+版权归《睡前消息》编辑部所有，不在本许可证授权范围内。
+
+This license covers everything in this repository (the skill text, eval
+scripts, and configuration). The news-list data lives in the separate
+shuiqian-news-list repository; its content is copyrighted by its original
+publisher and is NOT licensed under these terms.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
