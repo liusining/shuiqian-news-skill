@@ -9,13 +9,12 @@ description: 拉取《睡前消息》每日新闻列表。当用户想看今天�
 
 ## 数据接口
 
-- 主地址：`https://shuiqian-news.sining.ai/daily/YYYY-MM-DD.json`
-- 备用地址：`https://raw.githubusercontent.com/liusining/shuiqian-news-list/main/data/daily/YYYY-MM-DD.json`
-- 日期索引：`https://shuiqian-news.sining.ai/index.json`（字段：`latest` 最新可用日期、`dates` 全部可用日期、`lastUpdated` 最后更新时间）
+数据托管在 GitHub，按天一个 JSON 文件：
 
-先请求主地址；网络失败或返回非 200/404 的错误时切换备用地址。两个地址内容一致。
+- 某天的新闻列表：`https://raw.githubusercontent.com/liusining/shuiqian-news-list/main/data/daily/YYYY-MM-DD.json`
+- 日期索引：`https://raw.githubusercontent.com/liusining/shuiqian-news-list/main/data/index.json`（字段：`latest` 最新可用日期、`dates` 全部可用日期、`lastUpdated` 最后更新时间）
 
-请求时带上常规的 User-Agent 头（浏览器或工具标识均可）：部分脚本默认 UA（如 Python-urllib）会被 CDN 拒绝并返回 403。
+缺失的日期返回 404。
 
 ## 批量获取
 
@@ -30,7 +29,7 @@ git clone --depth 1 https://github.com/liusining/shuiqian-news-list
 ## 步骤
 
 1. **解析日期**：把用户的说法（今天、昨天、前天、上周三、2023年3月15日……）解析为 `YYYY-MM-DD`。一律以东八区（Asia/Shanghai）的当前日期为基准，不要用 UTC。
-2. **请求数据**：按上面的地址获取 JSON。
+2. **请求数据**：按上面的地址获取当天的 JSON。
 3. **404 处理**（按顺序判断）：
    - 目标日期在未来 → 告知日期在未来，无法查询。
    - 目标日期是今天 → 当天列表一般在晚上 21:00–24:00 之间发布。改取 `index.json`，回答「今天的还没发布，最新一期是 {latest}」，并询问是否要看最新一期。
@@ -66,5 +65,5 @@ git clone --depth 1 https://github.com/liusining/shuiqian-news-list
 
 ## 错误与边界
 
-- 两个地址都失败：明确告知网络失败，不要凭记忆补内容。
+- 请求失败（网络错误、连接不上）：明确告知取数失败，不要凭记忆补内容，也不要编造。
 - 数据起点为 2019-01-10，更早的日期直接说明超出数据范围。

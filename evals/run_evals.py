@@ -39,8 +39,9 @@ ROOT = Path(__file__).resolve().parent.parent
 SKILL_DIR = ROOT / "skills" / "shuiqian-news-list"
 RUNS_DIR = Path(__file__).resolve().parent / "runs"
 TZ = ZoneInfo("Asia/Shanghai")
-API = "https://shuiqian-news.sining.ai"
-UA = {"User-Agent": "shuiqian-news-eval/1 (+https://shuiqian-news.sining.ai)"}
+DATA_REPO = "liusining/shuiqian-news-list"
+API = f"https://raw.githubusercontent.com/{DATA_REPO}/main/data"
+UA = {"User-Agent": f"shuiqian-news-eval/1 (+https://github.com/{DATA_REPO})"}
 DAILY_URL_RE = re.compile(r"/daily/(\d{4}-\d{2}-\d{2})\.json")
 # Remote-only variant: after a clone the workspace contains local
 # data/daily/*.json paths, which must not count as network fetches.
@@ -49,13 +50,26 @@ LINK_RE = re.compile(r"https?://[^\s)\]>\"']+")
 CODEX_TIMEOUT = 600
 
 
+class GraderError(Exception):
+    """The grader could not establish ground truth — the case is unjudgeable,
+    which must never be silently graded as the 404 / not-published branch."""
+
+
 def api_get(path):
+    """(status, doc). A real 404 returns (404, None); anything that stops us
+    from knowing raises GraderError so the case is reported as an error."""
     req = urllib.request.Request(f"{API}{path}", headers=UA)
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        return e.code, None
+        if e.code == 404:
+            return 404, None
+        raise GraderError(f"{API}{path} -> HTTP {e.code}")
+    except urllib.error.URLError as e:  # DNS / connection / TLS
+        raise GraderError(f"{API}{path} -> {type(e).__name__}: {e.reason}")
+    except Exception as e:  # timeout, malformed JSON, …
+        raise GraderError(f"{API}{path} -> {type(e).__name__}: {e}")
 
 
 def resolve_date(spec):
@@ -95,9 +109,16 @@ def norm(text):
 
 
 def link_universe(docs):
-    urls = {API, f"{API}/index.json", "https://raw.githubusercontent.com",
-            "https://github.com/liusining/shuiqian-news-list",
-            "https://github.com/liusining/shuiqian-news-skill"}
+    # Repo-scoped, not a bare raw.githubusercontent.com prefix: raw is now the
+    # only data channel, so "any file any user hosts on raw" must not count as
+    # a legitimate citation.
+    urls = {API, f"{API}/index.json",
+            f"https://raw.githubusercontent.com/{DATA_REPO}/",
+            f"https://github.com/{DATA_REPO}",
+            "https://github.com/liusining/shuiqian-news-skill",
+            # the data repo's README credits this archive; bulk cases can read
+            # it after cloning and legitimately cite it
+            "https://github.com/bedtimenews/bedtimenews-archive-contents"}
     for day_doc in docs:
         if day_doc:
             if day_doc.get("article_url"):
@@ -136,6 +157,7 @@ def run_case(ev, keep_ws):
     checks = ev.get("checks", {})
     ws = Path(tempfile.mkdtemp(prefix=f"sqeval-{ev['id']}-"))
     failures = []
+    events, answer = "", ""
     try:
         events, answer, rc = run_codex(ev["prompt"], ws)
         if rc != 0:
@@ -230,9 +252,30 @@ def run_case(ev, keep_ws):
 
         failures.append("case has no recognized checks")
         return failures, events, answer
+    except GraderError as e:
+        # Ground truth is unavailable: report it as its own failure rather
+        # than letting one unreachable probe kill a multi-hour run.
+        failures.append(f"GRADER ERROR (not a skill regression): {e}")
+        return failures, events, answer
     finally:
         if not keep_ws:
             shutil.rmtree(ws, ignore_errors=True)
+
+
+def preflight():
+    """Free static checks — a stale address in SKILL.md would otherwise only
+    surface after a multi-hour run, as a confusing behavioural failure."""
+    text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    problems = []
+    if "sining.ai" in text:
+        problems.append("SKILL.md still references the retired sining.ai host")
+    if f"{API}/daily/" not in text:
+        problems.append("SKILL.md is missing the raw daily URL")
+    if f"{API}/index.json" not in text:
+        problems.append("SKILL.md is missing the raw index.json URL")
+    if f"git clone --depth 1 https://github.com/{DATA_REPO}" not in text:
+        problems.append("SKILL.md is missing the bulk clone URL of the data repo")
+    return problems
 
 
 def main():
@@ -240,6 +283,11 @@ def main():
     ap.add_argument("--only")
     ap.add_argument("--keep-workspaces", action="store_true")
     args = ap.parse_args()
+
+    if problems := preflight():
+        for p in problems:
+            print(f"PREFLIGHT FAIL: {p}")
+        return 1
 
     spec = json.loads((Path(__file__).resolve().parent / "evals.json")
                       .read_text(encoding="utf-8"))

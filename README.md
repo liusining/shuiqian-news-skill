@@ -2,7 +2,7 @@
 
 《睡前消息》栏目每天晚上发布一期新闻列表。本仓库提供一个 AI agent skill（适用于 Claude Code 等），随时查询当天或历史某天的新闻列表，并附带配套的 eval 测试。
 
-数据本体存放在独立仓库 [liusining/shuiqian-news-list](https://github.com/liusining/shuiqian-news-list)（按天存放的 JSON，每日更新），通过 `https://shuiqian-news.sining.ai` 提供接口。
+数据本体存放在独立仓库 [liusining/shuiqian-news-list](https://github.com/liusining/shuiqian-news-list)（按天存放的 JSON，每日更新），skill 直接从 GitHub 读取。
 
 ## 安装 skill
 
