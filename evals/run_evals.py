@@ -92,10 +92,20 @@ def run_codex(prompt, ws):
     (ws / ".agents" / "skills").mkdir(parents=True)
     shutil.copytree(SKILL_DIR, ws / ".agents" / "skills" / SKILL_DIR.name)
     last = ws / "last.txt"
-    r = subprocess.run(
-        ["codex", "exec", "-C", str(ws), "--skip-git-repo-check",
-         "-o", str(last), prompt],
-        capture_output=True, text=True, timeout=CODEX_TIMEOUT)
+    try:
+        r = subprocess.run(
+            ["codex", "exec", "-C", str(ws), "--skip-git-repo-check",
+             "-o", str(last), prompt],
+            capture_output=True, text=True, timeout=CODEX_TIMEOUT)
+    except subprocess.TimeoutExpired as e:
+        # One hung codex must not destroy a 1-2.5h run: fail this case and
+        # carry on. (Seen 2026-09-12 on n-story, which had passed hours
+        # earlier — codex hangs, not a skill regression.)
+        def _txt(b):
+            return b.decode("utf-8", "replace") if isinstance(b, bytes) else (b or "")
+        events = _txt(e.stdout) + _txt(e.stderr)
+        answer = last.read_text(encoding="utf-8") if last.exists() else ""
+        return events, answer, f"timeout after {CODEX_TIMEOUT}s"
     events = r.stdout + r.stderr
     answer = last.read_text(encoding="utf-8") if last.exists() else ""
     return events, answer, r.returncode
@@ -205,6 +215,9 @@ def run_case(ev, keep_ws):
     events, answer = "", ""
     try:
         events, answer, rc = run_codex(ev["prompt"], ws)
+        if isinstance(rc, str):  # harness problem, not a skill verdict
+            failures.append(f"HARNESS ERROR (not a skill regression): codex {rc}")
+            return failures, events, answer
         if rc != 0:
             failures.append(f"codex exec rc={rc}")
         fetched = set(DAILY_URL_RE.findall(events))
