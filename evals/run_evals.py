@@ -144,13 +144,58 @@ def check_links_subset(answer, docs, failures):
         failures.append(f"fabricated/unknown link: {url[:80]}")
 
 
+def mentions_date(answer, iso):
+    """True if the answer names this date in any ordinary rendering.
+
+    The literal-substring check this replaces failed a correct answer on
+    2026-09-12: the agent wrote "最新一期是 **9 月 11 日**" and the grader was
+    looking for "2026-09-11". It still catches a genuinely wrong date — the
+    same run had another case claim "9 月 10 日" when latest was 09-11."""
+    y, m, d = iso.split("-")
+    forms = [
+        iso, f"{y}/{m}/{d}", f"{m}-{d}", f"{m}/{d}",
+        f"{int(m)}-{int(d)}", f"{int(m)}/{int(d)}",
+        f"{y}年{int(m)}月{int(d)}日", f"{int(m)}月{int(d)}日",
+        f"{y}年{m}月{d}日", f"{m}月{d}日",
+    ]
+    flat = re.sub(r"[\s*_`]+", "", answer)
+    return any(f in flat for f in forms)
+
+
+def title_overlap(title, hay):
+    """Character-bigram overlap of a Chinese title against the normalized
+    answer. Measured on the 2026-09-12 run: items that were present but
+    reworded scored 0.26-1.00, titles from an unrelated day scored <= 0.14."""
+    t = norm(title)
+    if len(t) < 2:
+        return 1.0 if t and t in hay else 0.0
+    grams = {t[i:i + 2] for i in range(len(t) - 1)}
+    return sum(1 for g in grams if g in hay) / len(grams)
+
+
+# Only used for the ~1% of items that carry no source_url (measured over a
+# 40-day sample: 4 of 447). Set between the two clusters above.
+TITLE_MIN_OVERLAP = 0.20
+
+
 def check_render(answer, day_doc, failures):
+    """Assert every item of the day made it into the answer.
+
+    Presence is proved by source_url, which is exact and unforgeable — agents
+    legitimately condense or reword titles ("以色列在黎巴嫩南部爆破真主党地下
+    堡垒" -> "以军爆破黎巴嫩地下设施"), and demanding verbatim titles flagged
+    correct answers as failures. Only items with no URL fall back to a fuzzy
+    title match."""
     hay = norm(answer)
     for it in day_doc.get("items", []):
-        if norm(it["title"]) not in hay:
-            failures.append(f"missing item title: {it['no']}. {it['title'][:30]}")
-        if it.get("source_url") and it["source_url"] not in answer:
-            failures.append(f"missing source_url of item {it['no']}")
+        if it.get("source_url"):
+            if it["source_url"] not in answer:
+                failures.append(f"missing item {it['no']} "
+                                f"(source_url absent): {it['title'][:30]}")
+        elif title_overlap(it["title"], hay) < TITLE_MIN_OVERLAP:
+            failures.append(f"missing item {it['no']} "
+                            f"(no source_url, title not recognizable): "
+                            f"{it['title'][:30]}")
 
 
 def run_case(ev, keep_ws):
@@ -183,7 +228,7 @@ def run_case(ev, keep_ws):
                 latest = (idx or {}).get("latest", "")
                 is_today = date == dt.datetime.now(TZ).date().isoformat()
                 if is_today:
-                    if latest and latest not in answer:
+                    if latest and not mentions_date(answer, latest):
                         failures.append(
                             f"today-unpublished: latest {latest} not mentioned")
                 elif not any(k in answer for k in ("找不到", "没有", "缺", "无数据")):
